@@ -1,66 +1,199 @@
 "use client"
 
 import type React from "react"
-
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Label } from "@/components/ui/label"
-import { Trash2, Plus, ShoppingCart, LogOut } from "lucide-react"
+import { Trash2, Plus, ShoppingCart, LogOut, Eye, EyeOff, Loader2 } from "lucide-react"
+import { supabase } from "@/lib/supabase"
+import type { User } from "@supabase/supabase-js"
 
 interface ShoppingItem {
-  id: number
+  id: string
   name: string
+  completed: boolean
+  created_at: string
 }
 
 export default function ShoppingApp() {
-  const [isLoggedIn, setIsLoggedIn] = useState(false)
-  const [username, setUsername] = useState("")
+  const [user, setUser] = useState<User | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [authLoading, setAuthLoading] = useState(false)
+  const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
-  const [currentUser, setCurrentUser] = useState("")
+  const [showPassword, setShowPassword] = useState(false)
+  const [isSignUp, setIsSignUp] = useState(false)
   const [shoppingItems, setShoppingItems] = useState<ShoppingItem[]>([])
   const [newItem, setNewItem] = useState("")
-  const [loginError, setLoginError] = useState("")
+  const [authError, setAuthError] = useState("")
+  const [itemsLoading, setItemsLoading] = useState(false)
 
-  const handleLogin = (e: React.FormEvent) => {
-    e.preventDefault()
-    setLoginError("")
-
-    if (username.trim() && password.trim()) {
-      setIsLoggedIn(true)
-      setCurrentUser(username)
-      setUsername("")
-      setPassword("")
-    } else {
-      setLoginError("Tanpri antre non itilizatè ak mo de pas ou")
+  // Check if user is logged in on component mount
+  useEffect(() => {
+    const getSession = async () => {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession()
+      setUser(session?.user ?? null)
+      setLoading(false)
     }
-  }
 
-  const handleLogout = () => {
-    setIsLoggedIn(false)
-    setCurrentUser("")
-    setShoppingItems([])
-    setNewItem("")
-  }
+    getSession()
 
-  const addItem = (e: React.FormEvent) => {
-    e.preventDefault()
-    if (newItem.trim()) {
-      const item: ShoppingItem = {
-        id: Date.now(),
-        name: newItem.trim(),
+    // Listen for auth changes
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(async (event, session) => {
+      setUser(session?.user ?? null)
+      if (session?.user) {
+        await loadShoppingItems()
+      } else {
+        setShoppingItems([])
       }
-      setShoppingItems([...shoppingItems, item])
-      setNewItem("")
+    })
+
+    return () => subscription.unsubscribe()
+  }, [])
+
+  // Load shopping items when user logs in
+  useEffect(() => {
+    if (user) {
+      loadShoppingItems()
+    }
+  }, [user])
+
+  const loadShoppingItems = async () => {
+    if (!user) return
+
+    setItemsLoading(true)
+    try {
+      const { data, error } = await supabase
+        .from("shopping_items")
+        .select("*")
+        .eq("user_id", user.id)
+        .order("created_at", { ascending: false })
+
+      if (error) throw error
+      setShoppingItems(data || [])
+    } catch (error) {
+      console.error("Error loading shopping items:", error)
+    } finally {
+      setItemsLoading(false)
     }
   }
 
-  const removeItem = (id: number) => {
-    setShoppingItems(shoppingItems.filter((item) => item.id !== id))
+  const handleAuth = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setAuthError("")
+    setAuthLoading(true)
+
+    try {
+      if (isSignUp) {
+        const { error } = await supabase.auth.signUp({
+          email,
+          password,
+        })
+        if (error) throw error
+        setAuthError("Tcheke email ou pou konfime kont ou!")
+      } else {
+        const { error } = await supabase.auth.signInWithPassword({
+          email,
+          password,
+        })
+        if (error) throw error
+      }
+    } catch (error: any) {
+      // Better error handling with specific messages in Haitian Creole
+      let errorMessage = ""
+
+      if (error.message.includes("Invalid login credentials")) {
+        errorMessage = "Email oswa mo de pas ou pa bon. Eseye ankò oswa kreye yon kont nouvo."
+      } else if (error.message.includes("Email not confirmed")) {
+        errorMessage = "Ou pa konfime email ou ankò. Tcheke email ou pou klik sou lyen konfimation an."
+      } else if (error.message.includes("User not found")) {
+        errorMessage = "Kont sa a pa egziste. Klik sou 'Kreye youn' pou fè yon kont nouvo."
+      } else if (error.message.includes("Password should be at least 6 characters")) {
+        errorMessage = "Mo de pas ou dwe gen omwen 6 karaktè."
+      } else if (error.message.includes("Unable to validate email address")) {
+        errorMessage = "Email sa a pa valid. Tanpri antre yon email ki bon."
+      } else {
+        errorMessage = error.message
+      }
+
+      setAuthError(errorMessage)
+    } finally {
+      setAuthLoading(false)
+    }
   }
 
-  if (!isLoggedIn) {
+  const handleLogout = async () => {
+    await supabase.auth.signOut()
+    setEmail("")
+    setPassword("")
+    setShoppingItems([])
+  }
+
+  const addItem = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!newItem.trim() || !user) return
+
+    try {
+      const { data, error } = await supabase
+        .from("shopping_items")
+        .insert([
+          {
+            user_id: user.id,
+            name: newItem.trim(),
+            completed: false,
+          },
+        ])
+        .select()
+        .single()
+
+      if (error) throw error
+
+      setShoppingItems([data, ...shoppingItems])
+      setNewItem("")
+    } catch (error) {
+      console.error("Error adding item:", error)
+    }
+  }
+
+  const removeItem = async (id: string) => {
+    try {
+      const { error } = await supabase.from("shopping_items").delete().eq("id", id)
+
+      if (error) throw error
+
+      setShoppingItems(shoppingItems.filter((item) => item.id !== id))
+    } catch (error) {
+      console.error("Error removing item:", error)
+    }
+  }
+
+  const toggleItemCompleted = async (id: string, completed: boolean) => {
+    try {
+      const { error } = await supabase.from("shopping_items").update({ completed: !completed }).eq("id", id)
+
+      if (error) throw error
+
+      setShoppingItems(shoppingItems.map((item) => (item.id === id ? { ...item, completed: !completed } : item)))
+    } catch (error) {
+      console.error("Error updating item:", error)
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center">
+        <Loader2 className="w-8 h-8 animate-spin" />
+      </div>
+    )
+  }
+
+  if (!user) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4">
         <Card className="w-full max-w-md">
@@ -69,37 +202,79 @@ export default function ShoppingApp() {
               <ShoppingCart className="w-6 h-6 text-white" />
             </div>
             <CardTitle className="text-2xl font-bold text-gray-900">App Kòmisyon</CardTitle>
-            <CardDescription>Antre nan kont ou pou kòmanse achè</CardDescription>
+            <CardDescription>
+              {isSignUp ? "Kreye yon kont nouvo" : "Antre nan kont ou pou kòmanse achè"}
+            </CardDescription>
           </CardHeader>
           <CardContent>
-            <form onSubmit={handleLogin} className="space-y-4">
+            <form onSubmit={handleAuth} className="space-y-4">
               <div className="space-y-2">
-                <Label htmlFor="username">Non Itilizatè</Label>
+                <Label htmlFor="email">Email</Label>
                 <Input
-                  id="username"
-                  type="text"
-                  value={username}
-                  onChange={(e) => setUsername(e.target.value)}
-                  placeholder="Antre non itilizatè ou"
+                  id="email"
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="Antre email ou"
                   className="w-full"
+                  required
                 />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="password">Mo de Pas</Label>
-                <Input
-                  id="password"
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="Antre mo de pas ou"
-                  className="w-full"
-                />
+                <div className="relative">
+                  <Input
+                    id="password"
+                    type={showPassword ? "text" : "password"}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="Antre mo de pas ou"
+                    className="w-full pr-10"
+                    required
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="absolute right-0 top-0 h-full px-3 py-2 hover:bg-transparent"
+                    onClick={() => setShowPassword(!showPassword)}
+                  >
+                    {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </Button>
+                </div>
               </div>
-              {loginError && <p className="text-red-600 text-sm">{loginError}</p>}
-              <Button type="submit" className="w-full bg-blue-600 hover:bg-blue-700">
-                Antre
+              {authError && <p className="text-red-600 text-sm bg-red-50 p-2 rounded">{authError}</p>}
+              <Button type="submit" className="w-full bg-blue-600 hover:bg-blue-700" disabled={authLoading}>
+                {authLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+                {isSignUp ? "Kreye Kont" : "Antre"}
               </Button>
             </form>
+            <div className="mt-4 p-4 bg-blue-50 rounded-lg">
+              <p className="text-sm text-blue-800 mb-2">Pou teste app la:</p>
+              <Button
+                onClick={() => {
+                  setEmail("demo@example.com")
+                  setPassword("demo123")
+                }}
+                variant="outline"
+                size="sm"
+                className="w-full"
+              >
+                Itilize Demo Account
+              </Button>
+            </div>
+            <div className="mt-4 text-center">
+              <Button
+                variant="link"
+                onClick={() => {
+                  setIsSignUp(!isSignUp)
+                  setAuthError("")
+                }}
+                className="text-sm"
+              >
+                {isSignUp ? "Ou gen yon kont deja? Antre" : "Ou pa gen kont? Kreye youn"}
+              </Button>
+            </div>
           </CardContent>
         </Card>
       </div>
@@ -117,7 +292,7 @@ export default function ShoppingApp() {
                 <ShoppingCart className="w-5 h-5 text-white" />
               </div>
               <div>
-                <h1 className="text-xl font-bold text-gray-900">Kòmisyon {currentUser}</h1>
+                <h1 className="text-xl font-bold text-gray-900">Kòmisyon {user.email?.split("@")[0]}</h1>
                 <p className="text-gray-600 text-sm">Mete bagay ou vle achè yo</p>
               </div>
             </div>
@@ -166,7 +341,12 @@ export default function ShoppingApp() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            {shoppingItems.length === 0 ? (
+            {itemsLoading ? (
+              <div className="text-center py-8">
+                <Loader2 className="w-8 h-8 animate-spin mx-auto mb-3 text-gray-400" />
+                <p className="text-gray-500">Ap chaje lis ou a...</p>
+              </div>
+            ) : shoppingItems.length === 0 ? (
               <div className="text-center py-8 text-gray-500">
                 <ShoppingCart className="w-12 h-12 mx-auto mb-3 text-gray-300" />
                 <p>Ou poko gen anyen nan lis ou a</p>
@@ -177,9 +357,29 @@ export default function ShoppingApp() {
                 {shoppingItems.map((item) => (
                   <div
                     key={item.id}
-                    className="flex items-center justify-between p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors"
+                    className={`flex items-center justify-between p-3 rounded-lg transition-colors ${
+                      item.completed ? "bg-green-50 border border-green-200" : "bg-gray-50 hover:bg-gray-100"
+                    }`}
                   >
-                    <span className="font-medium text-gray-900 capitalize">{item.name}</span>
+                    <div className="flex items-center space-x-3">
+                      <button
+                        onClick={() => toggleItemCompleted(item.id, item.completed)}
+                        className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${
+                          item.completed
+                            ? "bg-green-500 border-green-500 text-white"
+                            : "border-gray-300 hover:border-green-400"
+                        }`}
+                      >
+                        {item.completed && <span className="text-xs">✓</span>}
+                      </button>
+                      <span
+                        className={`font-medium capitalize ${
+                          item.completed ? "text-green-700 line-through" : "text-gray-900"
+                        }`}
+                      >
+                        {item.name}
+                      </span>
+                    </div>
                     <Button
                       onClick={() => removeItem(item.id)}
                       variant="ghost"
